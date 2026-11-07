@@ -63,6 +63,7 @@ import kotlinx.coroutines.withContext
 import local.doja.companion.net.CameraStreamClient
 import local.doja.companion.net.GatewayClient
 import local.doja.companion.net.GatewayException
+import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -181,10 +182,8 @@ private fun AndromedaApp() {
         }
     }
 
-    var watching by remember { mutableStateOf(false) }
-    var cameraFrame by remember { mutableStateOf<Bitmap?>(null) }
-    var cameraNote by rememberSaveable { mutableStateOf("") }
-    var cameraClient by remember { mutableStateOf<CameraStreamClient?>(null) }
+    var voiceRecording by remember { mutableStateOf(false) }
+    var voiceStatus by rememberSaveable { mutableStateOf("") }
     var replyPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
 
     fun playReply(audio: ByteArray) {
@@ -207,6 +206,116 @@ private fun AndromedaApp() {
             replyPlayer = player
         } catch (ignored: Exception) { }
     }
+
+    val commandRecorder = remember { VoiceCommandRecorder(context) }
+
+    fun beginVoice() {
+        if (recording || commandRecorder.start()) {
+            if (recording) {
+                voiceStatus = "Termina primero el mensaje de voz."
+                return
+            }
+            voiceRecording = true
+            voiceStatus = "Escuchando… máximo 15 segundos."
+        } else {
+            voiceStatus = "No se pudo abrir el micrófono."
+        }
+    }
+
+    suspend fun deliverAnswer(client: GatewayClient, id: String, answer: JSONObject) {
+        reply = answer.optString("say").ifEmpty { "La casa no devolvió respuesta." }
+        order = ""
+        val sayWav = answer.optString("say_wav")
+        if (sayWav.isNotEmpty()) {
+            try {
+                val audio = withContext(Dispatchers.IO) { client.speech(sayWav) }
+                playReply(audio)
+            } catch (ignored: Exception) { }
+        }
+    }
+
+    fun sendVoice(current: TokenStore.Session, note: VoiceCommandRecorder.Note) {
+        sending = true
+        voiceStatus = "Entendiendo lo que dijiste…"
+        scope.launch {
+            val id = "cmd-" + java.util.UUID.randomUUID().toString().replace("-", "")
+            val client = GatewayClient(current.baseUrl, current.pin, current.token)
+            val wav = withContext(Dispatchers.IO) {
+                note.file.readBytes().also { note.file.delete() }
+            }
+            var attempt = 0
+            try {
+                while (true) {
+                    try {
+                        var answer = withContext(Dispatchers.IO) {
+                            client.commandAudio(id, wav, note.durationMs)
+                        }
+                        if (answer.optString("say_wav").isEmpty()) {
+                            delay(1_200)
+                            answer = withContext(Dispatchers.IO) {
+                                client.commandAudio(id, wav, note.durationMs)
+                            }
+                        }
+                        deliverAnswer(client, id, answer)
+                        voiceStatus = ""
+                        break
+                    } catch (error: GatewayException) {
+                        val retryable = error.status == 409 || error.status == 503 || error.status == 429
+                        if (retryable && attempt < 3) {
+                            attempt++
+                            voiceStatus = "La casa está ocupada; reintentando…"
+                            delay(if (error.retryAfterMs > 0) error.retryAfterMs else 3_000L)
+                            continue
+                        }
+                        voiceStatus = when (error.status) {
+                            409 -> "La casa está ocupada; espera un momento."
+                            503 -> "Andrómeda no está escuchando ahora."
+                            else -> error.message ?: "No se pudo enviar la orden."
+                        }
+                        break
+                    }
+                }
+            } catch (error: Exception) {
+                voiceStatus = "Sin conexión: ${error.message}"
+            } finally {
+                sending = false
+            }
+        }
+    }
+
+    fun stopVoice(current: TokenStore.Session?) {
+        val note = commandRecorder.stop()
+        voiceRecording = false
+        if (note == null) {
+            voiceStatus = "No se escuchó nada; intenta de nuevo."
+            return
+        }
+        if (current == null) {
+            note.file.delete()
+            voiceStatus = "Empareja el teléfono primero."
+            return
+        }
+        sendVoice(current, note)
+    }
+
+    val microphoneVoice = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) beginVoice() else voiceStatus = "Sin permiso de micrófono no puedo escuchar."
+    }
+
+    LaunchedEffect(voiceRecording) {
+        while (voiceRecording) {
+            delay(500)
+            if (commandRecorder.elapsedMs() >= VoiceCommandRecorder.MAX_MS) {
+                stopVoice(session)
+                break
+            }
+        }
+    }
+
+    var watching by remember { mutableStateOf(false) }
+    var cameraFrame by remember { mutableStateOf<Bitmap?>(null) }
+    var cameraNote by rememberSaveable { mutableStateOf("") }
+    var cameraClient by remember { mutableStateOf<CameraStreamClient?>(null) }
 
     fun stopCamera() {
         val current = cameraClient
@@ -247,6 +356,8 @@ private fun AndromedaApp() {
             cameraClient = null
             replyPlayer?.release()
             replyPlayer = null
+            commandRecorder.cancel()
+            recorder.cancel()
         }
     }
 
@@ -323,6 +434,19 @@ private fun AndromedaApp() {
                     sending = sending,
                     recording = recording,
                     noteStatus = noteStatus,
+                    voiceRecording = voiceRecording,
+                    voiceStatus = voiceStatus,
+                    onVoice = {
+                        if (!voiceRecording) {
+                            if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                beginVoice()
+                            } else {
+                                microphoneVoice.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        } else {
+                            stopVoice(session)
+                        }
+                    },
                     watching = watching,
                     cameraFrame = cameraFrame,
                     cameraNote = cameraNote,
@@ -330,7 +454,9 @@ private fun AndromedaApp() {
                     onStopCamera = { stopCamera() },
                     onRecord = {
                         val current = session
-                        if (!recording) {
+                        if (voiceRecording) {
+                            noteStatus = "Termina primero la orden de voz."
+                        } else if (!recording) {
                             if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                                 beginNote()
                             } else {
@@ -358,15 +484,7 @@ private fun AndromedaApp() {
                                                 delay(1_200)
                                                 answer = withContext(Dispatchers.IO) { client.command(id, text, wantWav = true) }
                                             }
-                                            reply = answer.optString("say").ifEmpty { "La casa no devolvió respuesta." }
-                                            order = ""
-                                            val sayWav = answer.optString("say_wav")
-                                            if (sayWav.isNotEmpty()) {
-                                                try {
-                                                    val audio = withContext(Dispatchers.IO) { client.speech(sayWav) }
-                                                    playReply(audio)
-                                                } catch (ignored: Exception) { }
-                                            }
+                                            deliverAnswer(client, id, answer)
                                             break
                                         } catch (error: GatewayException) {
                                             val retryable = error.status == 409 || error.status == 503 || error.status == 429
@@ -553,6 +671,9 @@ private fun HomeContent(
     sending: Boolean,
     recording: Boolean,
     noteStatus: String,
+    voiceRecording: Boolean,
+    voiceStatus: String,
+    onVoice: () -> Unit,
     watching: Boolean,
     cameraFrame: Bitmap?,
     cameraNote: String,
@@ -606,6 +727,17 @@ private fun HomeContent(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(if (sending) "Enviando…" else "Enviar a la casa")
+            }
+            Button(
+                onClick = onVoice,
+                enabled = !sending,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (voiceRecording) "Detener y enviar" else "Hablar a la casa")
+            }
+            if (voiceStatus.isNotEmpty()) {
+                SectionLabel("VOZ")
+                Text(voiceStatus, fontSize = 13.sp, color = Color(0xFFDCE4F5))
             }
             if (reply.isNotEmpty()) {
                 SectionLabel("ANDRÓMEDA")

@@ -72,6 +72,32 @@ class GatewayClient(
         }
     }
 
+    /** Orden hablada: WAV PCM16 16 kHz mono. El id es idempotente. */
+    fun commandAudio(id: String, wav: ByteArray, durationMs: Long): JSONObject {
+        require(wav.isNotEmpty() && wav.size <= 2 * 1024 * 1024) { "Audio fuera de límite" }
+        val url = URL(baseUrl.trimEnd('/') + "/v1/command/audio/" + id)
+        val connection = (url.openConnection() as HttpsURLConnection).apply {
+            requestMethod = "PUT"
+            connectTimeout = 5_000
+            readTimeout = 60_000
+            sslSocketFactory = sslContext.socketFactory
+            hostnameVerifier = HostnameVerifier { _, _ -> true }
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("X-Andromeda-Contract", "1")
+            if (token != null) setRequestProperty("Authorization", "Bearer $token")
+            setRequestProperty("Content-Type", "audio/wav")
+            setRequestProperty("X-Andromeda-Duration-Ms", durationMs.toString())
+            doOutput = true
+            setFixedLengthStreamingMode(wav.size)
+        }
+        try {
+            connection.outputStream.use { it.write(wav) }
+            return read(connection)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     /** Descarga el WAV de una respuesta remota (voz de Andrómeda). */
     fun speech(path: String): ByteArray {
         val url = URL(baseUrl.trimEnd('/') + path)
