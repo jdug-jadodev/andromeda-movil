@@ -72,6 +72,27 @@ class GatewayClient(
         }
     }
 
+    /** Descarga el WAV de una respuesta remota (voz de Andrómeda). */
+    fun speech(path: String): ByteArray {
+        val url = URL(baseUrl.trimEnd('/') + path)
+        val connection = (url.openConnection() as HttpsURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 5_000
+            readTimeout = 20_000
+            sslSocketFactory = sslContext.socketFactory
+            hostnameVerifier = HostnameVerifier { _, _ -> true }
+            setRequestProperty("X-Andromeda-Contract", "1")
+            if (token != null) setRequestProperty("Authorization", "Bearer $token")
+        }
+        try {
+            val status = connection.responseCode
+            if (status !in 200..299) throw GatewayException(status, "speech", "No pude descargar la voz.")
+            return connection.inputStream.use { it.readBytes() }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun request(
         method: String,
         path: String,

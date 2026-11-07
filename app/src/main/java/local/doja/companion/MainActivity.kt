@@ -3,6 +3,8 @@ package local.doja.companion
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -183,6 +185,28 @@ private fun AndromedaApp() {
     var cameraFrame by remember { mutableStateOf<Bitmap?>(null) }
     var cameraNote by rememberSaveable { mutableStateOf("") }
     var cameraClient by remember { mutableStateOf<CameraStreamClient?>(null) }
+    var replyPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+
+    fun playReply(audio: ByteArray) {
+        try {
+            val file = java.io.File(context.cacheDir, "andromeda-reply.wav")
+            file.writeBytes(audio)
+            replyPlayer?.release()
+            val player = MediaPlayer()
+            player.setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build())
+            player.setDataSource(file.absolutePath)
+            player.setOnCompletionListener {
+                it.release()
+                file.delete()
+            }
+            player.prepare()
+            player.start()
+            replyPlayer = player
+        } catch (ignored: Exception) { }
+    }
 
     fun stopCamera() {
         val current = cameraClient
@@ -221,6 +245,8 @@ private fun AndromedaApp() {
         onDispose {
             cameraClient?.stop()
             cameraClient = null
+            replyPlayer?.release()
+            replyPlayer = null
         }
     }
 
@@ -326,9 +352,21 @@ private fun AndromedaApp() {
                                 try {
                                     while (true) {
                                         try {
-                                            val answer = withContext(Dispatchers.IO) { client.command(id, text) }
+                                            var answer = withContext(Dispatchers.IO) { client.command(id, text, wantWav = true) }
+                                            if (answer.optString("say_wav").isEmpty()) {
+                                                // Cold start: the WAV is copied a moment later.
+                                                delay(1_200)
+                                                answer = withContext(Dispatchers.IO) { client.command(id, text, wantWav = true) }
+                                            }
                                             reply = answer.optString("say").ifEmpty { "La casa no devolvió respuesta." }
                                             order = ""
+                                            val sayWav = answer.optString("say_wav")
+                                            if (sayWav.isNotEmpty()) {
+                                                try {
+                                                    val audio = withContext(Dispatchers.IO) { client.speech(sayWav) }
+                                                    playReply(audio)
+                                                } catch (ignored: Exception) { }
+                                            }
                                             break
                                         } catch (error: GatewayException) {
                                             val retryable = error.status == 409 || error.status == 503 || error.status == 429
