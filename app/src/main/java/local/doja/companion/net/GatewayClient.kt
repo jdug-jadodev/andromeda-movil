@@ -13,6 +13,12 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
+class GatewayException(
+    val status: Int,
+    val code: String,
+    message: String
+) : IOException(message)
+
 /**
  * Cliente del gateway de casa.
  *
@@ -22,13 +28,21 @@ import javax.net.ssl.X509TrustManager
 class GatewayClient(
     private val baseUrl: String,
     pinSha256: String,
-    private val token: String
+    private val token: String? = null
 ) {
     private val sslContext = pinnedContext(pinSha256)
 
+    fun pair(code: String, deviceName: String): JSONObject {
+        val body = JSONObject()
+            .put("code", code)
+            .put("device_name", deviceName)
+            .put("contract", 1)
+        return request("POST", "/v1/pair", body)
+    }
+
     fun health(): JSONObject = request("GET", "/v1/health", null)
 
-    private fun request(method: String, path: String, body: ByteArray?): JSONObject {
+    private fun request(method: String, path: String, body: JSONObject?): JSONObject {
         val url = URL(baseUrl.trimEnd('/') + path)
         val connection = (url.openConnection() as HttpsURLConnection).apply {
             requestMethod = method
@@ -36,21 +50,30 @@ class GatewayClient(
             readTimeout = 15_000
             sslSocketFactory = sslContext.socketFactory
             hostnameVerifier = HostnameVerifier { _, _ -> true }
-            setRequestProperty("Authorization", "Bearer $token")
             setRequestProperty("Accept", "application/json")
             setRequestProperty("X-Andromeda-Contract", "1")
+            if (token != null) setRequestProperty("Authorization", "Bearer $token")
             if (body != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json")
             }
         }
         try {
-            if (body != null) connection.outputStream.use { it.write(body) }
+            if (body != null) {
+                connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            }
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            if (status !in 200..299) throw IOException("HTTP $status: $text")
-            return JSONObject(text)
+            val json = if (text.isBlank()) JSONObject() else JSONObject(text)
+            if (status !in 200..299) {
+                throw GatewayException(
+                    status,
+                    json.optString("error", "http"),
+                    json.optString("message", "HTTP $status")
+                )
+            }
+            return json
         } finally {
             connection.disconnect()
         }
