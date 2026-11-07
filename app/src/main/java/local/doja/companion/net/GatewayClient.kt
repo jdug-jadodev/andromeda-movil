@@ -43,7 +43,7 @@ class GatewayClient(
             .put("text", text)
             .put("client_ts_ms", System.currentTimeMillis())
             .put("want_wav", wantWav)
-        return request("POST", "/v1/command", body, readTimeoutMs = 45_000)
+        return request("POST", "/v1/command", body, readTimeoutMs = 60_000)
     }
 
     /** Nota de voz para la casa. El id es idempotente. */
