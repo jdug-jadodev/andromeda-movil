@@ -46,9 +46,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import local.doja.companion.net.GatewayClient
+import local.doja.companion.net.GatewayException
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -86,6 +88,9 @@ private fun AndromedaApp() {
     }
     var status by rememberSaveable { mutableStateOf("Casa: sin emparejar") }
     var busy by rememberSaveable { mutableStateOf(false) }
+    var order by rememberSaveable { mutableStateOf("") }
+    var reply by rememberSaveable { mutableStateOf("") }
+    var sending by rememberSaveable { mutableStateOf(false) }
     var session by remember { mutableStateOf<TokenStore.Session?>(null) }
 
     fun baseUrl(): String = "https://${host.trim()}:${port.trim()}"
@@ -157,6 +162,51 @@ private fun AndromedaApp() {
                 HomeContent(
                     session = session!!,
                     busy = busy,
+                    order = order,
+                    onOrder = { order = it.take(500) },
+                    reply = reply,
+                    sending = sending,
+                    onSend = {
+                        val current = session
+                        val text = order.trim()
+                        if (current != null && text.isNotEmpty() && !sending) {
+                            sending = true
+                            reply = "Enviando a la casa…"
+                            scope.launch {
+                                val id = "cmd-" + java.util.UUID.randomUUID().toString().replace("-", "")
+                                val client = GatewayClient(current.baseUrl, current.pin, current.token)
+                                var attempt = 0
+                                try {
+                                    while (true) {
+                                        try {
+                                            val answer = withContext(Dispatchers.IO) { client.command(id, text) }
+                                            reply = answer.optString("say").ifEmpty { "La casa no devolvió respuesta." }
+                                            order = ""
+                                            break
+                                        } catch (error: GatewayException) {
+                                            val retryable = error.status == 409 || error.status == 503 || error.status == 429
+                                            if (retryable && attempt < 3) {
+                                                attempt++
+                                                reply = "La casa está ocupada; reintentando…"
+                                                delay(if (error.retryAfterMs > 0) error.retryAfterMs else 3_000L)
+                                                continue
+                                            }
+                                            reply = when (error.status) {
+                                                409 -> "La casa está ocupada; espera un momento."
+                                                503 -> "Andrómeda no está escuchando ahora."
+                                                else -> error.message ?: "No se pudo enviar la orden."
+                                            }
+                                            break
+                                        }
+                                    }
+                                } catch (error: Exception) {
+                                    reply = "Sin conexión: ${error.message}"
+                                } finally {
+                                    sending = false
+                                }
+                            }
+                        }
+                    },
                     onHealth = { session?.let { askHealth(it) } },
                     onSettings = { openSettings(session) },
                     onForget = {
@@ -311,6 +361,11 @@ private fun PairingContent(
 private fun HomeContent(
     session: TokenStore.Session,
     busy: Boolean,
+    order: String,
+    onOrder: (String) -> Unit,
+    reply: String,
+    sending: Boolean,
+    onSend: () -> Unit,
     onHealth: () -> Unit,
     onSettings: () -> Unit,
     onForget: () -> Unit
@@ -338,14 +393,29 @@ private fun HomeContent(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SectionLabel("ÓRDENES POR VOZ")
+            SectionLabel("ORDEN A CASA")
             Text(
-                text = "La siguiente fase conecta el micrófono de este teléfono con las herramientas de la casa.",
+                text = "Escríbela. Andrómeda la ejecuta y responde con su voz en el altavoz de casa.",
                 fontSize = 13.sp,
                 color = Color(0xFFDCE4F5)
             )
-            Button(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
-                Text("Hablar (próximamente)")
+            OutlinedTextField(
+                value = order,
+                onValueChange = onOrder,
+                label = { Text("Orden para Andrómeda") },
+                maxLines = 3,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Button(
+                onClick = onSend,
+                enabled = !sending && order.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (sending) "Enviando…" else "Enviar a la casa")
+            }
+            if (reply.isNotEmpty()) {
+                SectionLabel("ANDRÓMEDA")
+                Text(reply, fontSize = 14.sp, color = Color(0xFFDCE4F5))
             }
         }
     }

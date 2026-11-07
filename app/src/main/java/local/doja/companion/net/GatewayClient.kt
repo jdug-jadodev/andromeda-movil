@@ -16,7 +16,8 @@ import javax.net.ssl.X509TrustManager
 class GatewayException(
     val status: Int,
     val code: String,
-    message: String
+    message: String,
+    val retryAfterMs: Long = 0
 ) : IOException(message)
 
 /**
@@ -42,12 +43,27 @@ class GatewayClient(
 
     fun health(): JSONObject = request("GET", "/v1/health", null)
 
-    private fun request(method: String, path: String, body: JSONObject?): JSONObject {
+    /** Orden remota. El id es idempotente: reintentar no la ejecuta dos veces. */
+    fun command(id: String, text: String, wantWav: Boolean = false): JSONObject {
+        val body = JSONObject()
+            .put("id", id)
+            .put("text", text)
+            .put("client_ts_ms", System.currentTimeMillis())
+            .put("want_wav", wantWav)
+        return request("POST", "/v1/command", body, readTimeoutMs = 30_000)
+    }
+
+    private fun request(
+        method: String,
+        path: String,
+        body: JSONObject?,
+        readTimeoutMs: Int = 15_000
+    ): JSONObject {
         val url = URL(baseUrl.trimEnd('/') + path)
         val connection = (url.openConnection() as HttpsURLConnection).apply {
             requestMethod = method
             connectTimeout = 5_000
-            readTimeout = 15_000
+            readTimeout = readTimeoutMs
             sslSocketFactory = sslContext.socketFactory
             hostnameVerifier = HostnameVerifier { _, _ -> true }
             setRequestProperty("Accept", "application/json")
@@ -70,7 +86,8 @@ class GatewayClient(
                 throw GatewayException(
                     status,
                     json.optString("error", "http"),
-                    json.optString("message", "HTTP $status")
+                    json.optString("message", "HTTP $status"),
+                    json.optLong("retry_after_ms", 0)
                 )
             }
             return json
