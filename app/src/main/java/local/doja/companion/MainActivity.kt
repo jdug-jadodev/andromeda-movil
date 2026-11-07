@@ -1,8 +1,12 @@
 package local.doja.companion
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -91,9 +95,83 @@ private fun AndromedaApp() {
     var order by rememberSaveable { mutableStateOf("") }
     var reply by rememberSaveable { mutableStateOf("") }
     var sending by rememberSaveable { mutableStateOf(false) }
+    var recording by remember { mutableStateOf(false) }
+    var noteStatus by rememberSaveable { mutableStateOf("") }
+    val recorder = remember { VoiceNoteRecorder(context) }
     var session by remember { mutableStateOf<TokenStore.Session?>(null) }
 
     fun baseUrl(): String = "https://${host.trim()}:${port.trim()}"
+
+    fun beginNote() {
+        if (recorder.start()) {
+            recording = true
+            noteStatus = "Grabando… máximo 60 segundos."
+        } else {
+            noteStatus = "No se pudo abrir el micrófono."
+        }
+    }
+
+    fun sendNote(note: VoiceNoteRecorder.Note, current: TokenStore.Session) {
+        noteStatus = "Enviando mensaje…"
+        scope.launch {
+            try {
+                val id = "msg-" + java.util.UUID.randomUUID().toString().replace("-", "")
+                val answer = withContext(Dispatchers.IO) {
+                    val bytes = note.file.readBytes()
+                    try {
+                        GatewayClient(current.baseUrl, current.pin, current.token)
+                            .sendMessage(id, bytes, note.type, note.durationMs)
+                    } finally {
+                        note.file.delete()
+                    }
+                }
+                noteStatus = if (answer.optString("status") == "queued") {
+                    "Mensaje encolado. Andrómeda lo dirá en el altavoz de casa."
+                } else {
+                    "Mensaje recibido por la casa."
+                }
+            } catch (error: GatewayException) {
+                noteStatus = when (error.status) {
+                    429 -> if (error.retryAfterMs > 0)
+                        "Espera ${(error.retryAfterMs + 999) / 1000} s antes de otro mensaje."
+                    else "Demasiados mensajes; espera un momento."
+                    413 -> "El mensaje es demasiado grande."
+                    else -> error.message ?: "No se pudo enviar el mensaje."
+                }
+            } catch (error: Exception) {
+                noteStatus = "Sin conexión: ${error.message}"
+            }
+        }
+    }
+
+    fun stopNote(current: TokenStore.Session?) {
+        val note = recorder.stop()
+        recording = false
+        if (note == null) {
+            noteStatus = "La grabación fue demasiado corta."
+            return
+        }
+        if (current == null) {
+            note.file.delete()
+            noteStatus = "Empareja el teléfono primero."
+            return
+        }
+        sendNote(note, current)
+    }
+
+    val microphone = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) beginNote() else noteStatus = "Sin permiso de micrófono no puedo grabar."
+    }
+
+    LaunchedEffect(recording) {
+        while (recording) {
+            delay(500)
+            if (recorder.elapsedMs() >= VoiceNoteRecorder.MAX_MS) {
+                stopNote(session)
+                break
+            }
+        }
+    }
 
     fun askHealth(current: TokenStore.Session) {
         busy = true
@@ -166,11 +244,24 @@ private fun AndromedaApp() {
                     onOrder = { order = it.take(500) },
                     reply = reply,
                     sending = sending,
+                    recording = recording,
+                    noteStatus = noteStatus,
+                    onRecord = {
+                        val current = session
+                        if (!recording) {
+                            if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                beginNote()
+                            } else {
+                                microphone.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        } else {
+                            stopNote(current)
+                        }
+                    },
                     onSend = {
                         val current = session
                         val text = order.trim()
-                        if (current != null && text.isNotEmpty() && !sending) {
-                            sending = true
+                        if (current != null && text.isNotEmpty() && !sending) {                            sending = true
                             reply = "Enviando a la casa…"
                             scope.launch {
                                 val id = "cmd-" + java.util.UUID.randomUUID().toString().replace("-", "")
@@ -365,6 +456,9 @@ private fun HomeContent(
     onOrder: (String) -> Unit,
     reply: String,
     sending: Boolean,
+    recording: Boolean,
+    noteStatus: String,
+    onRecord: () -> Unit,
     onSend: () -> Unit,
     onHealth: () -> Unit,
     onSettings: () -> Unit,
@@ -416,6 +510,35 @@ private fun HomeContent(
             if (reply.isNotEmpty()) {
                 SectionLabel("ANDRÓMEDA")
                 Text(reply, fontSize = 14.sp, color = Color(0xFFDCE4F5))
+            }
+        }
+    }
+
+    Surface(
+        color = CardColor,
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SectionLabel("MENSAJE DE VOZ")
+            Text(
+                text = if (recording) {
+                    "Grabando… pulsa «Detener y enviar». Máximo 60 segundos."
+                } else {
+                    "Grábalo aquí. Andrómeda lo dirá en el altavoz de casa cuando esté libre."
+                },
+                fontSize = 13.sp,
+                color = Color(0xFFDCE4F5)
+            )
+            Button(
+                onClick = onRecord,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (recording) "Detener y enviar" else "Grabar mensaje")
+            }
+            if (noteStatus.isNotEmpty()) {
+                SectionLabel("MENSAJE")
+                Text(noteStatus, fontSize = 14.sp, color = Color(0xFFDCE4F5))
             }
         }
     }

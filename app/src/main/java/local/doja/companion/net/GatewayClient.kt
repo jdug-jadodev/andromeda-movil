@@ -53,6 +53,32 @@ class GatewayClient(
         return request("POST", "/v1/command", body, readTimeoutMs = 30_000)
     }
 
+    /** Nota de voz para la casa. El id es idempotente. */
+    fun sendMessage(id: String, audio: ByteArray, contentType: String, durationMs: Long): JSONObject {
+        require(audio.isNotEmpty() && audio.size <= 2 * 1024 * 1024) { "Nota de voz fuera de límite" }
+        val url = URL(baseUrl.trimEnd('/') + "/v1/messages/" + id)
+        val connection = (url.openConnection() as HttpsURLConnection).apply {
+            requestMethod = "PUT"
+            connectTimeout = 5_000
+            readTimeout = 20_000
+            sslSocketFactory = sslContext.socketFactory
+            hostnameVerifier = HostnameVerifier { _, _ -> true }
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("X-Andromeda-Contract", "1")
+            if (token != null) setRequestProperty("Authorization", "Bearer $token")
+            setRequestProperty("Content-Type", contentType)
+            setRequestProperty("X-Andromeda-Duration-Ms", durationMs.toString())
+            doOutput = true
+            setFixedLengthStreamingMode(audio.size)
+        }
+        try {
+            connection.outputStream.use { it.write(audio) }
+            return read(connection)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun request(
         method: String,
         path: String,
@@ -78,22 +104,26 @@ class GatewayClient(
             if (body != null) {
                 connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             }
-            val status = connection.responseCode
-            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-            val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            val json = if (text.isBlank()) JSONObject() else JSONObject(text)
-            if (status !in 200..299) {
-                throw GatewayException(
-                    status,
-                    json.optString("error", "http"),
-                    json.optString("message", "HTTP $status"),
-                    json.optLong("retry_after_ms", 0)
-                )
-            }
-            return json
+            return read(connection)
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun read(connection: HttpsURLConnection): JSONObject {
+        val status = connection.responseCode
+        val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+        val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        val json = if (text.isBlank()) JSONObject() else JSONObject(text)
+        if (status !in 200..299) {
+            throw GatewayException(
+                status,
+                json.optString("error", "http"),
+                json.optString("message", "HTTP $status"),
+                json.optLong("retry_after_ms", 0)
+            )
+        }
+        return json
     }
 
     private fun pinnedContext(pin: String): SSLContext {
