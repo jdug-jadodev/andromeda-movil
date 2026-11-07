@@ -185,6 +185,7 @@ private fun AndromedaApp() {
     var voiceRecording by remember { mutableStateOf(false) }
     var voiceStatus by rememberSaveable { mutableStateOf("") }
     var replyPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var replyPlaying by remember { mutableStateOf(false) }
 
     fun playReply(audio: ByteArray) {
         try {
@@ -200,11 +201,15 @@ private fun AndromedaApp() {
             player.setOnCompletionListener {
                 it.release()
                 file.delete()
+                replyPlaying = false
             }
             player.prepare()
             player.start()
             replyPlayer = player
-        } catch (ignored: Exception) { }
+            replyPlaying = true
+        } catch (ignored: Exception) {
+            replyPlaying = false
+        }
     }
 
     val commandRecorder = remember { VoiceCommandRecorder(context) }
@@ -436,6 +441,7 @@ private fun AndromedaApp() {
                     noteStatus = noteStatus,
                     voiceRecording = voiceRecording,
                     voiceStatus = voiceStatus,
+                    replyPlaying = replyPlaying,
                     onVoice = {
                         if (!voiceRecording) {
                             if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
@@ -673,6 +679,7 @@ private fun HomeContent(
     noteStatus: String,
     voiceRecording: Boolean,
     voiceStatus: String,
+    replyPlaying: Boolean,
     onVoice: () -> Unit,
     watching: Boolean,
     cameraFrame: Bitmap?,
@@ -738,6 +745,9 @@ private fun HomeContent(
             if (voiceStatus.isNotEmpty()) {
                 SectionLabel("VOZ")
                 Text(voiceStatus, fontSize = 13.sp, color = Color(0xFFDCE4F5))
+            }
+            if (replyPlaying) {
+                Text("Reproduciendo la respuesta…", fontSize = 13.sp, color = Accent)
             }
             if (reply.isNotEmpty()) {
                 SectionLabel("ANDRÓMEDA")
