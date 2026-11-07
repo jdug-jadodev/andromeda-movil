@@ -11,12 +11,15 @@ import java.net.Socket
 import java.net.URI
 import java.security.SecureRandom
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLSocket
 
 /**
- * Visor de la camara de casa por WebSocket con TLS fijado. Los fotogramas JPEG
- * se decodifican fuera del hilo principal y se entregan ya listos para pintar.
- * Nada se guarda: cada Bitmap sustituye al anterior.
+ * Visor de la camara de casa por WebSocket con TLS fijado.
+ *
+ * El hilo lector nunca decodifica: solo guarda el ultimo JPEG recibido. El hilo
+ * de pintado toma ese ultimo fotograma y descarta los anteriores, asi que una
+ * red lenta o una pantalla lenta no acumulan retraso; se ve lo mas reciente.
  */
 class CameraStreamClient(
     private val baseUrl: String,
@@ -25,6 +28,7 @@ class CameraStreamClient(
 ) {
     private val sslContext = PinnedTls.context(pinSha256)
     private val main = Handler(Looper.getMainLooper())
+    private val latest = AtomicReference<ByteArray>()
 
     @Volatile private var socket: SSLSocket? = null
     @Volatile private var running = false
@@ -32,7 +36,8 @@ class CameraStreamClient(
     fun start(onFrame: (Bitmap) -> Unit, onEnd: (String) -> Unit) {
         stop()
         running = true
-        Thread({ run(onFrame, onEnd) }, "andromeda-camera-view").start()
+        Thread({ readLoop(onEnd) }, "andromeda-camera-read").start()
+        Thread({ renderLoop(onFrame) }, "andromeda-camera-render").start()
     }
 
     fun stop() {
@@ -41,9 +46,10 @@ class CameraStreamClient(
             socket?.close()
         } catch (ignored: Exception) { }
         socket = null
+        latest.set(null)
     }
 
-    private fun run(onFrame: (Bitmap) -> Unit, onEnd: (String) -> Unit) {
+    private fun readLoop(onEnd: (String) -> Unit) {
         var reason = "La vista terminó."
         try {
             val uri = URI(baseUrl.trimEnd('/'))
@@ -51,6 +57,8 @@ class CameraStreamClient(
             val port = if (uri.port > 0) uri.port else 11440
             val raw = Socket()
             raw.connect(InetSocketAddress(host, port), 5_000)
+            raw.tcpNoDelay = true
+            raw.receiveBufferSize = 128 * 1024
             val tls = sslContext.socketFactory.createSocket(raw, host, port, true) as SSLSocket
             tls.useClientMode = true
             tls.startHandshake()
@@ -105,9 +113,8 @@ class CameraStreamClient(
                     reason = "La vista terminó."
                     break
                 }
-                if (opcode != 2) continue
-                val bitmap = BitmapFactory.decodeByteArray(payload, 0, payload.size) ?: continue
-                if (running) main.post { if (running) onFrame(bitmap) }
+                // Keep only the newest frame; decoding happens on the render thread.
+                if (opcode == 2) latest.set(payload)
             }
         } catch (error: java.io.EOFException) {
             if (running) reason = "La casa cerró la vista."
@@ -118,8 +125,22 @@ class CameraStreamClient(
             }
         } finally {
             stop()
-            val message = reason
-            main.post { onEnd(message) }
+            main.post { onEnd(reason) }
+        }
+    }
+
+    private fun renderLoop(onFrame: (Bitmap) -> Unit) {
+        while (running) {
+            val jpeg = latest.getAndSet(null)
+            if (jpeg == null) {
+                Thread.sleep(20)
+                continue
+            }
+            val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: continue
+            if (!running) break
+            main.post { if (running) onFrame(bitmap) }
+            // Give the reader time to replace stale frames between paints.
+            Thread.sleep(150)
         }
     }
 
