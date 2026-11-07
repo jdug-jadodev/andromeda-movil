@@ -736,13 +736,11 @@ private fun HomeContent(
             ) {
                 Text(if (sending) "Enviando…" else "Enviar a la casa")
             }
-            Button(
-                onClick = onVoice,
-                enabled = !sending,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (voiceRecording) "Detener y enviar" else "Hablar a la casa")
-            }
+            Text(
+                text = "Órdenes por voz: suspendidas por ahora. Escribe la orden y usa «Enviar a la casa».",
+                fontSize = 12.sp,
+                color = Muted
+            )
             if (voiceStatus.isNotEmpty()) {
                 SectionLabel("VOZ")
                 Text(voiceStatus, fontSize = 13.sp, color = Color(0xFFDCE4F5))
