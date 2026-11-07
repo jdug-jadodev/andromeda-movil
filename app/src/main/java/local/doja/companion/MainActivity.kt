@@ -3,7 +3,9 @@ package local.doja.companion
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,7 +13,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -29,9 +35,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -46,19 +55,29 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             AndromedaTheme {
-                HomeScreen()
+                AndromedaApp()
             }
         }
     }
 }
 
+private const val SCREEN_PAIRING = "pairing"
+private const val SCREEN_HOME = "home"
+
+private val CardColor = Color(0xFF121A2A)
+private val Muted = Color(0xFF97A6C3)
+private val Accent = Color(0xFFB39DFF)
+private val Online = Color(0xFF4CAF50)
+private val Offline = Color(0xFFFF7043)
+
 @Composable
-private fun HomeScreen() {
+private fun AndromedaApp() {
     val context = LocalContext.current
     val store = remember { TokenStore(context) }
     val scope = rememberCoroutineScope()
 
-    var host by rememberSaveable { mutableStateOf("100.79.112.122") }
+    var screen by rememberSaveable { mutableStateOf(SCREEN_PAIRING) }
+    var host by rememberSaveable { mutableStateOf("andromeda") }
     var port by rememberSaveable { mutableStateOf("11440") }
     var deviceName by rememberSaveable { mutableStateOf("A56") }
     var pin by rememberSaveable { mutableStateOf("") }
@@ -68,11 +87,6 @@ private fun HomeScreen() {
     var status by rememberSaveable { mutableStateOf("Casa: sin emparejar") }
     var busy by rememberSaveable { mutableStateOf(false) }
     var session by remember { mutableStateOf<TokenStore.Session?>(null) }
-
-    LaunchedEffect(Unit) {
-        session = store.session()
-        if (session != null) status = "Casa emparejada: ${session?.deviceId}"
-    }
 
     fun baseUrl(): String = "https://${host.trim()}:${port.trim()}"
 
@@ -86,11 +100,31 @@ private fun HomeScreen() {
                 }
                 status = "Casa en línea · residente ${json.optString("resident")} · cámara ${json.optString("camera")}"
             } catch (error: Exception) {
-                status = "Error: ${error.message}"
+                status = "Sin conexión: ${error.message}"
             } finally {
                 busy = false
             }
         }
+    }
+
+    LaunchedEffect(Unit) {
+        val saved = store.session()
+        session = saved
+        if (saved != null) {
+            screen = SCREEN_HOME
+            askHealth(saved)
+        }
+    }
+
+    fun openSettings(current: TokenStore.Session?) {
+        if (current != null) {
+            val tail = current.baseUrl.removePrefix("https://")
+            host = tail.substringBefore(":")
+            port = tail.substringAfter(":", "11440")
+            certPin = current.pin
+            pin = ""
+        }
+        screen = SCREEN_PAIRING
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -101,122 +135,251 @@ private fun HomeScreen() {
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text("Andrómeda", fontSize = 30.sp, color = MaterialTheme.colorScheme.primary)
-            Text(status, fontSize = 14.sp)
-            Spacer(Modifier.height(4.dp))
-
-            OutlinedTextField(
-                value = host,
-                onValueChange = { host = it },
-                label = { Text("Host o IP") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            OutlinedTextField(
-                value = port,
-                onValueChange = { port = it.filter(Char::isDigit).take(5) },
-                label = { Text("Puerto") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.fillMaxWidth()
-            )
-            OutlinedTextField(
-                value = deviceName,
-                onValueChange = { deviceName = it.take(40) },
-                label = { Text("Nombre de este teléfono") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            OutlinedTextField(
-                value = pin,
-                onValueChange = { pin = it.filter(Char::isDigit).take(6) },
-                label = { Text("PIN de 6 dígitos") },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.fillMaxWidth()
-            )
-            OutlinedTextField(
-                value = certPin,
-                onValueChange = { certPin = it.trim() },
-                label = { Text("Pin del certificado (SHA-256)") },
-                singleLine = true,
-                textStyle = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.fillMaxWidth()
+            Text(
+                text = "Andrómeda",
+                fontSize = 31.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
             )
 
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Button(
-                    onClick = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(if (status.startsWith("Casa en línea")) Online else Offline)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(status, fontSize = 14.sp, color = Color(0xFFDCE4F5))
+            }
+
+            if (screen == SCREEN_HOME && session != null) {
+                HomeContent(
+                    session = session!!,
+                    busy = busy,
+                    onHealth = { session?.let { askHealth(it) } },
+                    onSettings = { openSettings(session) },
+                    onForget = {
+                        store.clear()
+                        session = null
+                        screen = SCREEN_PAIRING
+                        status = "Casa: sin emparejar"
+                    }
+                )
+            } else {
+                PairingContent(
+                    host = host,
+                    onHost = { host = it },
+                    port = port,
+                    onPort = { port = it.filter(Char::isDigit).take(5) },
+                    deviceName = deviceName,
+                    onDeviceName = { deviceName = it.take(40) },
+                    pin = pin,
+                    onPin = { pin = it.filter(Char::isDigit).take(6) },
+                    certPin = certPin,
+                    onCertPin = { certPin = it.trim() },
+                    busy = busy,
+                    hasSession = session != null,
+                    onPair = {
                         if (pin.length != 6) {
                             status = "El PIN debe tener 6 dígitos"
-                            return@Button
-                        }
-                        busy = true
-                        status = "Emparejando…"
-                        scope.launch {
-                            try {
-                                val response = withContext(Dispatchers.IO) {
-                                    GatewayClient(baseUrl(), certPin.trim(), null)
-                                        .pair(pin.trim(), deviceName.trim())
+                        } else {
+                            busy = true
+                            status = "Emparejando…"
+                            scope.launch {
+                                try {
+                                    val response = withContext(Dispatchers.IO) {
+                                        GatewayClient(baseUrl(), certPin.trim(), null)
+                                            .pair(pin.trim(), deviceName.trim())
+                                    }
+                                    val token = response.getString("token")
+                                    val deviceId = response.getString("device_id")
+                                    store.saveSession(baseUrl(), certPin.trim(), token, deviceId)
+                                    val saved = store.session()
+                                    session = saved
+                                    screen = SCREEN_HOME
+                                    status = "Emparejado: $deviceId"
+                                    saved?.let { askHealth(it) }
+                                } catch (error: Exception) {
+                                    status = "Error: ${error.message}"
+                                } finally {
+                                    busy = false
                                 }
-                                val token = response.getString("token")
-                                val deviceId = response.getString("device_id")
-                                store.saveSession(baseUrl(), certPin.trim(), token, deviceId)
-                                session = store.session()
-                                status = "Emparejado: $deviceId"
-                            } catch (error: Exception) {
-                                status = "Error: ${error.message}"
-                            } finally {
-                                busy = false
                             }
                         }
                     },
-                    enabled = !busy,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("Emparejar")
-                }
-                Button(
-                    onClick = {
-                        val current = session
-                        if (current == null) status = "Primero empareja"
-                        else askHealth(current)
-                    },
-                    enabled = !busy && session != null,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("Probar salud")
-                }
+                    onHealth = { session?.let { askHealth(it) } },
+                    onBack = { screen = SCREEN_HOME },
+                    onForget = {
+                        store.clear()
+                        session = null
+                        status = "Casa: sin emparejar"
+                    }
+                )
             }
 
-            OutlinedButton(
-                onClick = {
-                    store.clear()
-                    session = null
-                    status = "Casa: sin emparejar"
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Olvidar este teléfono")
-            }
-
+            Spacer(Modifier.height(4.dp))
             Text(
-                "Contrato v${Contract.VERSION} · la casa debe estar en Tailscale",
-                fontSize = 12.sp
+                text = "Contrato v${Contract.VERSION} · Tailscale · TLS fijado",
+                fontSize = 11.sp,
+                color = Muted
             )
         }
     }
 }
 
 @Composable
+private fun PairingContent(
+    host: String,
+    onHost: (String) -> Unit,
+    port: String,
+    onPort: (String) -> Unit,
+    deviceName: String,
+    onDeviceName: (String) -> Unit,
+    pin: String,
+    onPin: (String) -> Unit,
+    certPin: String,
+    onCertPin: (String) -> Unit,
+    busy: Boolean,
+    hasSession: Boolean,
+    onPair: () -> Unit,
+    onHealth: () -> Unit,
+    onBack: () -> Unit,
+    onForget: () -> Unit
+) {
+    SectionLabel("CONEXIÓN")
+    OutlinedTextField(
+        value = host,
+        onValueChange = onHost,
+        label = { Text("Host o IP") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+    OutlinedTextField(
+        value = port,
+        onValueChange = onPort,
+        label = { Text("Puerto") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = Modifier.fillMaxWidth()
+    )
+    OutlinedTextField(
+        value = deviceName,
+        onValueChange = onDeviceName,
+        label = { Text("Nombre de este teléfono") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+    OutlinedTextField(
+        value = pin,
+        onValueChange = onPin,
+        label = { Text("PIN de 6 dígitos") },
+        singleLine = true,
+        visualTransformation = PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = Modifier.fillMaxWidth()
+    )
+    OutlinedTextField(
+        value = certPin,
+        onValueChange = onCertPin,
+        label = { Text("Pin del certificado (SHA-256)") },
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.fillMaxWidth()
+    )
+
+    SectionLabel("ACCIONES")
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+        Button(onClick = onPair, enabled = !busy, modifier = Modifier.weight(1f)) {
+            Text("Emparejar")
+        }
+        Button(onClick = onHealth, enabled = !busy && hasSession, modifier = Modifier.weight(1f)) {
+            Text("Probar salud")
+        }
+    }
+    if (hasSession) {
+        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+            Text("Volver a la casa")
+        }
+    }
+    OutlinedButton(onClick = onForget, modifier = Modifier.fillMaxWidth()) {
+        Text("Olvidar este teléfono")
+    }
+}
+
+@Composable
+private fun HomeContent(
+    session: TokenStore.Session,
+    busy: Boolean,
+    onHealth: () -> Unit,
+    onSettings: () -> Unit,
+    onForget: () -> Unit
+) {
+    Surface(
+        color = CardColor,
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            SectionLabel("CASA")
+            Text(
+                text = session.baseUrl.removePrefix("https://"),
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text("Dispositivo ${session.deviceId}", fontSize = 12.sp, color = Muted)
+            Text("Contrato v${Contract.VERSION}", fontSize = 12.sp, color = Muted)
+        }
+    }
+
+    Surface(
+        color = CardColor,
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SectionLabel("ÓRDENES POR VOZ")
+            Text(
+                text = "La siguiente fase conecta el micrófono de este teléfono con las herramientas de la casa.",
+                fontSize = 13.sp,
+                color = Color(0xFFDCE4F5)
+            )
+            Button(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
+                Text("Hablar (próximamente)")
+            }
+        }
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+        Button(onClick = onHealth, enabled = !busy, modifier = Modifier.weight(1f)) {
+            Text("Probar conexión")
+        }
+        OutlinedButton(onClick = onSettings, modifier = Modifier.weight(1f)) {
+            Text("Ajustes")
+        }
+    }
+
+    OutlinedButton(onClick = onForget, modifier = Modifier.fillMaxWidth()) {
+        Text("Olvidar este teléfono")
+    }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text = text,
+        fontSize = 10.sp,
+        color = Muted,
+        letterSpacing = 1.sp,
+        fontWeight = FontWeight.Medium
+    )
+}
+
+@Composable
 private fun AndromedaTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
-            primary = Color(0xFF7C4DFF),
+            primary = Accent,
             background = Color(0xFF0B0B0F),
             surface = Color(0xFF0B0B0F)
         ),
