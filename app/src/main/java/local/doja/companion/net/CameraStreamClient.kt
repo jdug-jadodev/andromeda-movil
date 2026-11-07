@@ -109,8 +109,13 @@ class CameraStreamClient(
                 val bitmap = BitmapFactory.decodeByteArray(payload, 0, payload.size) ?: continue
                 if (running) main.post { if (running) onFrame(bitmap) }
             }
+        } catch (error: java.io.EOFException) {
+            if (running) reason = "La casa cerró la vista."
         } catch (error: Exception) {
-            if (running) reason = "Sin conexión: ${error.message}"
+            if (running) {
+                val detail = error.message
+                reason = if (detail.isNullOrBlank()) "La casa cerró la vista." else "Sin conexión: $detail"
+            }
         } finally {
             stop()
             val message = reason
