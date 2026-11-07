@@ -266,7 +266,7 @@ private fun AndromedaApp() {
                         voiceStatus = if (heard.isNotEmpty()) "Vosk entendió: \"$heard\"" else ""
                         break
                     } catch (error: GatewayException) {
-                        val retryable = error.status == 409 || error.status == 503 || error.status == 429
+                        val retryable = error.status == 409 || error.status == 503 || error.status == 429 || error.status == 504
                         if (retryable && attempt < 3) {
                             attempt++
                             voiceStatus = "La casa está ocupada; reintentando…"
@@ -494,7 +494,7 @@ private fun AndromedaApp() {
                                             deliverAnswer(client, id, answer)
                                             break
                                         } catch (error: GatewayException) {
-                                            val retryable = error.status == 409 || error.status == 503 || error.status == 429
+                                            val retryable = error.status == 409 || error.status == 503 || error.status == 429 || error.status == 504
                                             if (retryable && attempt < 3) {
                                                 attempt++
                                                 reply = "La casa está ocupada; reintentando…"
