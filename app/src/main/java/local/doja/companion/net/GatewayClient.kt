@@ -3,15 +3,8 @@ package local.doja.companion.net
 import org.json.JSONObject
 import java.io.IOException
 import java.net.URL
-import java.security.MessageDigest
-import java.security.SecureRandom
-import java.security.cert.CertificateException
-import java.security.cert.X509Certificate
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.HttpsURLConnection
-import javax.net.ssl.SSLContext
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 class GatewayException(
     val status: Int,
@@ -31,7 +24,7 @@ class GatewayClient(
     pinSha256: String,
     private val token: String? = null
 ) {
-    private val sslContext = pinnedContext(pinSha256)
+    private val sslContext = PinnedTls.context(pinSha256)
 
     fun pair(code: String, deviceName: String): JSONObject {
         val body = JSONObject()
@@ -126,28 +119,5 @@ class GatewayClient(
         return json
     }
 
-    private fun pinnedContext(pin: String): SSLContext {
-        val expected = pin.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-        require(expected.size == 32) { "Pin SHA-256 inválido" }
-
-        val trust = object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
-                throw CertificateException("Solo servidor")
-            }
-
-            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
-                if (chain.isNullOrEmpty()) throw CertificateException("Sin certificado")
-                val actual = MessageDigest.getInstance("SHA-256").digest(chain[0].encoded)
-                if (!MessageDigest.isEqual(actual, expected)) {
-                    throw CertificateException("Certificado no reconocido")
-                }
-            }
-
-            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-        }
-
-        return SSLContext.getInstance("TLS").apply {
-            init(null, arrayOf<TrustManager>(trust), SecureRandom())
-        }
-    }
+    private fun pinnedContext(pin: String) = PinnedTls.context(pin)
 }

@@ -1,0 +1,148 @@
+package local.doja.companion.net
+
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.os.Handler
+import android.os.Looper
+import org.json.JSONObject
+import java.io.DataInputStream
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.net.URI
+import java.security.SecureRandom
+import java.util.Base64
+import javax.net.ssl.SSLSocket
+
+/**
+ * Visor de la camara de casa por WebSocket con TLS fijado. Los fotogramas JPEG
+ * se decodifican fuera del hilo principal y se entregan ya listos para pintar.
+ * Nada se guarda: cada Bitmap sustituye al anterior.
+ */
+class CameraStreamClient(
+    private val baseUrl: String,
+    pinSha256: String,
+    private val token: String?
+) {
+    private val sslContext = PinnedTls.context(pinSha256)
+    private val main = Handler(Looper.getMainLooper())
+
+    @Volatile private var socket: SSLSocket? = null
+    @Volatile private var running = false
+
+    fun start(onFrame: (Bitmap) -> Unit, onEnd: (String) -> Unit) {
+        stop()
+        running = true
+        Thread({ run(onFrame, onEnd) }, "andromeda-camera-view").start()
+    }
+
+    fun stop() {
+        running = false
+        try {
+            socket?.close()
+        } catch (ignored: Exception) { }
+        socket = null
+    }
+
+    private fun run(onFrame: (Bitmap) -> Unit, onEnd: (String) -> Unit) {
+        var reason = "La vista terminó."
+        try {
+            val uri = URI(baseUrl.trimEnd('/'))
+            val host = uri.host
+            val port = if (uri.port > 0) uri.port else 11440
+            val raw = Socket()
+            raw.connect(InetSocketAddress(host, port), 5_000)
+            val tls = sslContext.socketFactory.createSocket(raw, host, port, true) as SSLSocket
+            tls.useClientMode = true
+            tls.startHandshake()
+            socket = tls
+
+            val keyBytes = ByteArray(16)
+            SecureRandom().nextBytes(keyBytes)
+            val key = Base64.getEncoder().encodeToString(keyBytes)
+            val head = "GET /v1/camera/stream HTTP/1.1\r\n"
+                .plus("Host: $host:$port\r\n")
+                .plus("Upgrade: websocket\r\n")
+                .plus("Connection: Upgrade\r\n")
+                .plus("Sec-WebSocket-Key: $key\r\n")
+                .plus("Sec-WebSocket-Version: 13\r\n")
+                .plus("X-Andromeda-Contract: 1\r\n")
+                .plus("Authorization: Bearer $token\r\n\r\n")
+            tls.outputStream.write(head.toByteArray(Charsets.UTF_8))
+            tls.outputStream.flush()
+
+            val input = DataInputStream(tls.inputStream)
+            val status = readLine(input)
+            if (!status.contains(" 101")) {
+                val body = readBody(input)
+                val json = try {
+                    JSONObject(body)
+                } catch (ignored: Exception) {
+                    null
+                }
+                reason = json?.optString("message").orEmpty().ifEmpty {
+                    if (status.contains(" 409")) "La cámara ya tiene un espectador." else "No se pudo abrir la cámara."
+                }
+                return
+            }
+            while (true) {
+                if (readLine(input).isEmpty()) break
+            }
+            while (running) {
+                val first = input.readUnsignedByte()
+                val second = input.readUnsignedByte()
+                var length = (second and 0x7F).toLong()
+                if (length == 126L) {
+                    length = ((input.readUnsignedByte() shl 8) or input.readUnsignedByte()).toLong()
+                } else if (length == 127L) {
+                    length = 0
+                    repeat(8) { length = (length shl 8) or input.readUnsignedByte().toLong() }
+                }
+                if (length < 0 || length > 4_000_000L) break
+                val payload = ByteArray(length.toInt())
+                input.readFully(payload)
+                val opcode = first and 0x0F
+                if (opcode == 8) {
+                    reason = "La vista terminó."
+                    break
+                }
+                if (opcode != 2) continue
+                val bitmap = BitmapFactory.decodeByteArray(payload, 0, payload.size) ?: continue
+                if (running) main.post { if (running) onFrame(bitmap) }
+            }
+        } catch (error: Exception) {
+            if (running) reason = "Sin conexión: ${error.message}"
+        } finally {
+            stop()
+            val message = reason
+            main.post { onEnd(message) }
+        }
+    }
+
+    private fun readLine(input: DataInputStream): String {
+        val line = StringBuilder()
+        while (true) {
+            val value = input.read()
+            if (value < 0) throw java.io.EOFException()
+            if (value == '\r'.code) continue
+            if (value == '\n'.code) return line.toString()
+            line.append(value.toChar())
+            if (line.length > 8192) throw java.io.IOException("Cabecera demasiado larga")
+        }
+    }
+
+    private fun readBody(input: DataInputStream): String {
+        // The gateway answers error bodies with a fixed Content-Length.
+        var contentLength = 0
+        while (true) {
+            val line = readLine(input)
+            if (line.isEmpty()) break
+            if (line.startsWith("Content-Length:", ignoreCase = true)) {
+                contentLength = line.substringAfter(':').trim().toIntOrNull() ?: 0
+            }
+        }
+        if (contentLength <= 0 || contentLength > 65536) return ""
+        val body = ByteArray(contentLength)
+        input.readFully(body)
+        return String(body, Charsets.UTF_8)
+    }
+}

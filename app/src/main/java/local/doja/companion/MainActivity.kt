@@ -2,12 +2,14 @@ package local.doja.companion
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +34,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,6 +46,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -53,6 +58,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import local.doja.companion.net.CameraStreamClient
 import local.doja.companion.net.GatewayClient
 import local.doja.companion.net.GatewayException
 
@@ -173,6 +179,51 @@ private fun AndromedaApp() {
         }
     }
 
+    var watching by remember { mutableStateOf(false) }
+    var cameraFrame by remember { mutableStateOf<Bitmap?>(null) }
+    var cameraNote by rememberSaveable { mutableStateOf("") }
+    var cameraClient by remember { mutableStateOf<CameraStreamClient?>(null) }
+
+    fun stopCamera() {
+        val current = cameraClient
+        cameraClient = null
+        current?.stop()
+        watching = false
+        cameraFrame = null
+    }
+
+    fun startCamera() {
+        val current = session ?: return
+        if (cameraClient != null) return
+        val client = CameraStreamClient(current.baseUrl, current.pin, current.token)
+        cameraClient = client
+        watching = true
+        cameraNote = "Conectando…"
+        client.start(
+            onFrame = { frame ->
+                if (cameraClient === client) {
+                    cameraFrame = frame
+                    if (cameraNote == "Conectando…") cameraNote = "En vivo · sin grabación. Hasta 10 minutos."
+                }
+            },
+            onEnd = { message ->
+                if (cameraClient === client) {
+                    cameraClient = null
+                    watching = false
+                    cameraFrame = null
+                    cameraNote = message
+                }
+            }
+        )
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            cameraClient?.stop()
+            cameraClient = null
+        }
+    }
+
     fun askHealth(current: TokenStore.Session) {
         busy = true
         status = "Consultando la casa…"
@@ -246,6 +297,11 @@ private fun AndromedaApp() {
                     sending = sending,
                     recording = recording,
                     noteStatus = noteStatus,
+                    watching = watching,
+                    cameraFrame = cameraFrame,
+                    cameraNote = cameraNote,
+                    onCamera = { startCamera() },
+                    onStopCamera = { stopCamera() },
                     onRecord = {
                         val current = session
                         if (!recording) {
@@ -301,6 +357,7 @@ private fun AndromedaApp() {
                     onHealth = { session?.let { askHealth(it) } },
                     onSettings = { openSettings(session) },
                     onForget = {
+                        stopCamera()
                         store.clear()
                         session = null
                         screen = SCREEN_PAIRING
@@ -458,6 +515,11 @@ private fun HomeContent(
     sending: Boolean,
     recording: Boolean,
     noteStatus: String,
+    watching: Boolean,
+    cameraFrame: Bitmap?,
+    cameraNote: String,
+    onCamera: () -> Unit,
+    onStopCamera: () -> Unit,
     onRecord: () -> Unit,
     onSend: () -> Unit,
     onHealth: () -> Unit,
@@ -539,6 +601,42 @@ private fun HomeContent(
             if (noteStatus.isNotEmpty()) {
                 SectionLabel("MENSAJE")
                 Text(noteStatus, fontSize = 14.sp, color = Color(0xFFDCE4F5))
+            }
+        }
+    }
+
+    Surface(
+        color = CardColor,
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SectionLabel("CÁMARA EN VIVO")
+            Text(
+                text = "Mira la cámara del Moto en directo. No se graba nada; máximo 10 minutos y un espectador.",
+                fontSize = 13.sp,
+                color = Color(0xFFDCE4F5)
+            )
+            cameraFrame?.let { frame ->
+                Image(
+                    bitmap = frame.asImageBitmap(),
+                    contentDescription = "Cámara en vivo de la casa",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF050813))
+                )
+            }
+            if (cameraNote.isNotEmpty()) {
+                Text(cameraNote, fontSize = 13.sp, color = Muted)
+            }
+            Button(
+                onClick = if (watching) onStopCamera else onCamera,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (watching) "Detener la cámara" else "Ver cámara")
             }
         }
     }
