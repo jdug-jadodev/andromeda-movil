@@ -262,7 +262,8 @@ private fun AndromedaApp() {
                             }
                         }
                         deliverAnswer(client, id, answer)
-                        voiceStatus = ""
+                        val heard = answer.optString("heard")
+                        voiceStatus = if (heard.isNotEmpty()) "Vosk entendió: \"$heard\"" else ""
                         break
                     } catch (error: GatewayException) {
                         val retryable = error.status == 409 || error.status == 503 || error.status == 429
