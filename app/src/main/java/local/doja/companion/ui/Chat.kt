@@ -5,6 +5,8 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -66,7 +68,17 @@ data class ChatEntry(val kind: Int, val at: Long, val text: String) {
     }
 }
 
-private val SUGGESTIONS = listOf("Apaga las luces", "Enciende las luces")
+private val SUGGESTIONS = listOf(
+    "Enciende las luces",
+    "Apaga las luces",
+    "Apaga la TV",
+    "Enciende la TV",
+    "Pon un temporizador de 5 minutos",
+    "Pon una alarma a las 7",
+    "Recuérdame llamar a mamá",
+    "Sube el volumen del teléfono",
+    "Busca el clima de mañana"
+)
 
 @Composable
 fun ChatScreen(
@@ -79,6 +91,7 @@ fun ChatScreen(
     voiceStatus: String,
     replyPlaying: Boolean,
     onSend: () -> Unit,
+    onSuggestion: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -97,7 +110,7 @@ fun ChatScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (chat.isEmpty()) {
-                item { ChatWelcome(onSuggestion = onOrder) }
+                item { ChatWelcome(onSuggestion = onSuggestion) }
             }
             items(chat.size) { index -> ChatBubble(chat[index]) }
             if (awaitingReply) {
@@ -118,6 +131,8 @@ fun ChatScreen(
                 }
             }
         }
+
+        SuggestionRow(onSuggestion)
 
         ChatInput(order = order, onOrder = onOrder, sending = sending, onSend = onSend)
     }
@@ -148,20 +163,54 @@ private fun ChatWelcome(onSuggestion: (String) -> Unit) {
             modifier = Modifier.padding(horizontal = 16.dp)
         )
         Spacer(Modifier.height(4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SUGGESTIONS.forEach { suggestion ->
-                Text(
-                    text = suggestion,
-                    fontSize = 13.sp,
-                    color = Palette.Lavender,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(Palette.Violet.copy(alpha = 0.12f))
-                        .border(1.dp, Palette.Stroke, CircleShape)
-                        .clickable(role = Role.Button) { onSuggestion(suggestion) }
-                        .padding(horizontal = 14.dp, vertical = 8.dp)
-                )
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SUGGESTIONS.take(4).chunked(2).forEach { pair ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    pair.forEach { suggestion -> SuggestionChip(suggestion, onSuggestion) }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun SuggestionChip(text: String, onClick: (String) -> Unit) {
+    Text(
+        text = text,
+        fontSize = 13.sp,
+        color = Palette.Lavender,
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(Palette.Violet.copy(alpha = 0.12f))
+            .border(1.dp, Palette.Stroke, CircleShape)
+            .clickable(role = Role.Button) { onClick(text) }
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+    )
+}
+
+/** Atajos de herramientas siempre visibles sobre el campo de texto. */
+@Composable
+private fun SuggestionRow(onSuggestion: (String) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        SUGGESTIONS.forEach { suggestion ->
+            Text(
+                text = suggestion,
+                fontSize = 12.sp,
+                color = Palette.Lavender,
+                maxLines = 1,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(Palette.Violet.copy(alpha = 0.12f))
+                    .border(1.dp, Palette.Stroke, CircleShape)
+                    .clickable(role = Role.Button) { onSuggestion(suggestion) }
+                    .padding(horizontal = 12.dp, vertical = 7.dp)
+            )
         }
     }
 }

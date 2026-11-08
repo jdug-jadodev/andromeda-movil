@@ -430,14 +430,15 @@ private fun AndromedaApp() {
         tab = TAB_LINK
     }
 
-    fun sendOrder() {
+    fun sendOrder(textOverride: String? = null) {
         val current = session
-        val text = order.trim()
+        val text = (textOverride ?: order).trim()
         if (current == null || text.isEmpty() || sending) return
         sending = true
         reply = "Enviando a la casa…"
         awaitingReply = true
         addChat(ChatEntry.USER, text)
+        if (textOverride != null) order = text
         scope.launch {
             val id = "cmd-" + java.util.UUID.randomUUID().toString().replace("-", "")
             val client = GatewayClient(current.baseUrl, current.pin, current.token)
@@ -568,6 +569,7 @@ private fun AndromedaApp() {
                         voiceStatus = voiceStatus,
                         replyPlaying = replyPlaying,
                         onSend = { sendOrder() },
+                        onSuggestion = { text -> sendOrder(text) },
                         modifier = modifier
                     )
                     TAB_VOICE -> VoiceNoteScreen(
