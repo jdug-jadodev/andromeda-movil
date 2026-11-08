@@ -7,6 +7,20 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -92,6 +106,7 @@ fun ChatScreen(
     replyPlaying: Boolean,
     onSend: () -> Unit,
     onSuggestion: (String) -> Unit,
+    dictation: DictationUi,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -132,9 +147,9 @@ fun ChatScreen(
             }
         }
 
-        SuggestionRow(onSuggestion)
+        if (!dictation.active) SuggestionRow(onSuggestion)
 
-        ChatInput(order = order, onOrder = onOrder, sending = sending, onSend = onSend)
+        ChatInput(order = order, onOrder = onOrder, sending = sending, onSend = onSend, dictation = dictation)
     }
 }
 
@@ -155,7 +170,7 @@ private fun ChatWelcome(onSuggestion: (String) -> Unit) {
             color = Palette.Text
         )
         Text(
-            "Escribe una orden. Andrómeda la ejecuta y responde con su voz en el altavoz de casa.",
+            "Escribe o dicta una orden. Andrómeda la ejecuta y responde con su voz en el altavoz de casa.",
             fontSize = 14.sp,
             color = Palette.Muted,
             textAlign = TextAlign.Center,
@@ -325,27 +340,66 @@ private fun TypingBubble(pending: String) {
     }
 }
 
+/** Estado y acciones del dictado por voz (transcribe, no envía). */
+class DictationUi(
+    val active: Boolean,
+    val finishing: Boolean,
+    val text: String,
+    val level: Float,
+    val onStart: () -> Unit,
+    val onDone: () -> Unit,
+    val onCancel: () -> Unit
+)
+
 @Composable
 private fun ChatInput(
     order: String,
     onOrder: (String) -> Unit,
     sending: Boolean,
-    onSend: () -> Unit
+    onSend: () -> Unit,
+    dictation: DictationUi
 ) {
     val canSend = !sending && order.isNotBlank()
     val shape = RoundedCornerShape(26.dp)
+    val focus = remember { FocusRequester() }
+    var field by remember { mutableStateOf(TextFieldValue(order, TextRange(order.length))) }
+    LaunchedEffect(order) {
+        if (field.text != order) field = TextFieldValue(order, TextRange(order.length))
+    }
+    var wasDictating by remember { mutableStateOf(false) }
+    LaunchedEffect(dictation.active) {
+        if (wasDictating && !dictation.active && order.isNotBlank()) {
+            runCatching { focus.requestFocus() }
+        }
+        wasDictating = dictation.active
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 10.dp)
     ) {
-        Row(verticalAlignment = Alignment.Bottom) {
+        if (dictation.active) {
+            DictationBar(dictation)
+        } else Row(verticalAlignment = Alignment.Bottom) {
             TextField(
-                value = order,
-                onValueChange = onOrder,
+                value = field,
+                onValueChange = {
+                    field = it
+                    onOrder(it.text)
+                },
                 placeholder = { Text("Orden para Andrómeda…") },
                 maxLines = 4,
                 shape = shape,
+                trailingIcon = {
+                    IconButton(onClick = dictation.onStart) {
+                        Icon(
+                            AppIcons.Mic,
+                            contentDescription = "Dictar orden",
+                            tint = Palette.Lavender,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                },
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = Palette.Panel,
                     unfocusedContainerColor = Palette.Panel.copy(alpha = 0.88f),
@@ -365,6 +419,7 @@ private fun ChatInput(
                 keyboardActions = KeyboardActions(onSend = { if (canSend) onSend() }),
                 modifier = Modifier
                     .weight(1f)
+                    .focusRequester(focus)
                     .border(1.dp, Palette.Stroke, shape)
             )
             Spacer(Modifier.width(8.dp))
@@ -394,13 +449,96 @@ private fun ChatInput(
                 .padding(start = 14.dp, end = 70.dp, top = 6.dp)
         ) {
             Text(
-                "Órdenes por voz suspendidas por ahora · escribe tu orden.",
+                if (dictation.active) "Nada se envía hasta que revises el texto y pulses enviar."
+                else "Toca el micrófono para dictar; revisa el texto y envíalo.",
                 fontSize = 11.sp,
                 color = Palette.Muted,
                 modifier = Modifier.weight(1f)
             )
             if (order.length > 400) {
                 Text("${order.length}/500", fontSize = 11.sp, color = Palette.Warn)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DictationBar(dictation: DictationUi) {
+    val levels = remember { mutableStateListOf<Float>() }
+    LaunchedEffect(dictation.level) {
+        levels.add(dictation.level)
+        while (levels.size > 32) levels.removeAt(0)
+    }
+    val shape = RoundedCornerShape(26.dp)
+    Row(verticalAlignment = Alignment.Bottom) {
+        Box(
+            modifier = Modifier
+                .size(54.dp)
+                .clip(CircleShape)
+                .background(Palette.PanelHigh)
+                .clickable(role = Role.Button, onClick = dictation.onCancel),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(AppIcons.Close, contentDescription = "Descartar dictado", tint = Palette.Muted, modifier = Modifier.size(22.dp))
+        }
+        Spacer(Modifier.width(8.dp))
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .heightIn(min = 54.dp)
+                .clip(shape)
+                .background(Palette.Panel)
+                .border(1.dp, Palette.Cyan.copy(alpha = 0.5f), shape)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                PulsingDot(if (dictation.finishing) Palette.Warn else Palette.Offline, 8.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (dictation.finishing) "Terminando…" else "Escuchando… toca ✓ al terminar",
+                    fontSize = 12.sp,
+                    color = Palette.Muted
+                )
+            }
+            Canvas(
+                Modifier
+                    .fillMaxWidth()
+                    .height(22.dp)
+            ) {
+                val bars = 32
+                val gap = 3.dp.toPx()
+                val w = (size.width - gap * (bars - 1)) / bars
+                val offset = bars - levels.size
+                for (i in 0 until bars) {
+                    val level = if (i >= offset) levels[i - offset] else 0f
+                    val h = 3.dp.toPx() + level * (size.height - 3.dp.toPx())
+                    drawRoundRect(
+                        Palette.Cyan.copy(alpha = 0.35f + 0.65f * level),
+                        topLeft = Offset(i * (w + gap), (size.height - h) / 2f),
+                        size = Size(w, h),
+                        cornerRadius = CornerRadius(w / 2f)
+                    )
+                }
+            }
+            if (dictation.text.isNotEmpty()) {
+                val shown = if (dictation.text.length > 240) "…" + dictation.text.takeLast(240) else dictation.text
+                Text(shown, fontSize = 15.sp, color = Palette.Text, lineHeight = 21.sp)
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Box(
+            modifier = Modifier
+                .size(54.dp)
+                .clip(CircleShape)
+                .background(Palette.PrimaryGradient)
+                .clickable(enabled = !dictation.finishing, role = Role.Button, onClick = dictation.onDone),
+            contentAlignment = Alignment.Center
+        ) {
+            if (dictation.finishing) {
+                CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+            } else {
+                Icon(AppIcons.Check, contentDescription = "Terminar dictado", tint = Color.White, modifier = Modifier.size(24.dp))
             }
         }
     }

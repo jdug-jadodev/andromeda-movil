@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +45,7 @@ import local.doja.companion.ui.AndromedaTheme
 import local.doja.companion.ui.CameraScreen
 import local.doja.companion.ui.ChatEntry
 import local.doja.companion.ui.ChatScreen
+import local.doja.companion.ui.DictationUi
 import local.doja.companion.ui.HomeShell
 import local.doja.companion.ui.LinkScreen
 import local.doja.companion.ui.PairingFields
@@ -238,7 +240,6 @@ private fun AndromedaApp() {
 
     suspend fun deliverAnswer(client: GatewayClient, id: String, answer: JSONObject) {
         reply = answer.optString("say").ifEmpty { "La casa no devolvió respuesta." }
-        order = ""
         awaitingReply = false
         addChat(ChatEntry.HOUSE, reply)
         val sayWav = answer.optString("say_wav")
@@ -381,8 +382,81 @@ private fun AndromedaApp() {
         )
     }
 
+    // Dictado: transcribe en el teléfono y deja el texto en la barra; nunca envía solo.
+    val dictation = remember { Dictation(context) }
+    var dictating by remember { mutableStateOf(false) }
+    var dictationFinishing by remember { mutableStateOf(false) }
+    var dictationText by remember { mutableStateOf("") }
+    var dictationLevel by remember { mutableFloatStateOf(0f) }
+
+    fun endDictation() {
+        dictating = false
+        dictationFinishing = false
+        dictationText = ""
+        dictationLevel = 0f
+    }
+
+    fun beginDictation() {
+        if (recording) {
+            voiceStatus = "Termina primero el mensaje de voz."
+            return
+        }
+        if (!dictation.available()) {
+            voiceStatus = "Este teléfono no tiene reconocimiento de voz disponible."
+            return
+        }
+        voiceStatus = ""
+        dictationText = ""
+        dictationFinishing = false
+        dictating = dictation.start(object : Dictation.Listener {
+            override fun onPartial(text: String) {
+                dictationText = text
+            }
+
+            override fun onLevel(level: Float) {
+                dictationLevel = level
+            }
+
+            override fun onFinished(text: String) {
+                endDictation()
+                if (text.isBlank()) {
+                    voiceStatus = "No se escuchó nada; intenta de nuevo."
+                } else {
+                    val base = order.trim()
+                    val heard = if (base.isEmpty()) text.replaceFirstChar { it.uppercase() } else text
+                    order = listOf(base, heard).filter { it.isNotEmpty() }.joinToString(" ").take(500)
+                }
+            }
+
+            override fun onError(message: String) {
+                endDictation()
+                voiceStatus = message
+            }
+        })
+    }
+
+    fun finishDictation() {
+        if (!dictating || dictationFinishing) return
+        dictationFinishing = true
+        dictation.stop()
+    }
+
+    fun cancelDictation() {
+        dictation.cancel()
+        endDictation()
+    }
+
+    val microphoneDictation = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) beginDictation() else voiceStatus = "Sin permiso de micrófono no puedo escuchar."
+    }
+
+    LaunchedEffect(tab) {
+        if (tab != TAB_CHAT) finishDictation()
+    }
+
     DisposableEffect(Unit) {
         onDispose {
+            dictation.cancel()
             cameraClient?.stop()
             cameraClient = null
             replyPlayer?.release()
@@ -438,7 +512,7 @@ private fun AndromedaApp() {
         reply = "Enviando a la casa…"
         awaitingReply = true
         addChat(ChatEntry.USER, text)
-        if (textOverride != null) order = text
+        order = ""
         scope.launch {
             val id = "cmd-" + java.util.UUID.randomUUID().toString().replace("-", "")
             val client = GatewayClient(current.baseUrl, current.pin, current.token)
@@ -513,6 +587,7 @@ private fun AndromedaApp() {
     }
 
     fun forget() {
+        cancelDictation()
         stopCamera()
         store.clear()
         session = null
@@ -570,6 +645,21 @@ private fun AndromedaApp() {
                         replyPlaying = replyPlaying,
                         onSend = { sendOrder() },
                         onSuggestion = { text -> sendOrder(text) },
+                        dictation = DictationUi(
+                            active = dictating,
+                            finishing = dictationFinishing,
+                            text = dictationText,
+                            level = dictationLevel,
+                            onStart = {
+                                if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                    beginDictation()
+                                } else {
+                                    microphoneDictation.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            },
+                            onDone = { finishDictation() },
+                            onCancel = { cancelDictation() }
+                        ),
                         modifier = modifier
                     )
                     TAB_VOICE -> VoiceNoteScreen(
@@ -580,6 +670,8 @@ private fun AndromedaApp() {
                         onRecord = {
                             if (voiceRecording) {
                                 noteStatus = "Termina primero la orden de voz."
+                            } else if (dictating) {
+                                noteStatus = "Termina primero el dictado."
                             } else if (!recording) {
                                 if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                                     beginNote()
